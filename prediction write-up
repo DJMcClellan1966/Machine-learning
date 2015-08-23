@@ -1,0 +1,159 @@
+---
+title: "machinelearning"
+author: "DJMcClellan"
+date: "August 20, 2015"
+output: html_document
+
+---
+#Machine Learning
+
+The goal of this project is to predict the manner the exercises where done from the data at the [website](http://groupware.les.inf.puc-rio.br/har), see the section on Weight Lifting Exercise).  The exercises were put into 5 different classes:  
+          (Class A) exactly according to the specification,
+          (Class B) throwing the elbows to the front,
+          (Class C) lifting the dumbbell only halfway,
+          (Class D) lowering the dumbbell only halfway, 
+          (Class E) throwing the hips to the front .
+
+##Executive summary
+
+  Using various machine learning techniques from the [Coursera Machine Learning Course](https://class.coursera.org/predmachlearn-031), especially the [Caret Package](http://topepo.github.io/caret/index.html).  I hope to predict accurately the way the exercises were done, first by downloading and cleaning the data.  The methods of analysis will be finding and removing na values, creating training, testing and validation sets, removing any high correlation values and predicting answers.
+  Findings after creating the pmltrain and pmltest there were 406 missing values that need to be removed, after cleaning there were no near zero values.  In my training set I identified correlated predicitors, that I hoped after removing might help my models.  Using the caret packeage to preprocess the with the pca method, along with random forest and crossvalidation, I created a model with 96% model accuracy.  
+
+###Data
+
+The training data for this project are available [here]
+(https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+The test data are available [here]
+(https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+```{r}
+rm(list=ls()) #clean up the console for clarity
+setwd("~/Desktop/coursera /machine learning") #set local work directory
+
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",destfile="training.csv", method="curl")
+
+pmltrain <- read.csv("training.csv", stringsAsFactors=FALSE)
+                      
+
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",destfile="testing.csv", method="curl")
+
+pmltest <- read.csv("testing.csv", stringsAsFactors=FALSE)
+                    
+```
+### Data Analysis
+Creating training and test data sets
+```{r}
+sum(complete.cases(pmltrain)) #get sum of missing values from data
+
+pmltrain <- pmltrain[, colSums(is.na(pmltrain)) == 0] #change na values into zero
+pmltest  <- pmltest[, colSums(is.na(pmltest)) == 0] #change na values into zero
+
+#remove columns from train and test by name
+pmltrain<- pmltrain[, !grepl("X|user_name|timestamp|window", colnames(pmltrain))]
+pmltest<- pmltest[, !grepl("X|user_name|timestamp|window", colnames(pmltest))]
+
+pmltrainclean <- pmltrain[, !grepl("^max|^min|^ampl|^var|^avg|^stdd|^ske|^kurt", colnames(pmltrain))]
+pmltestclean<- pmltest[, !grepl("^max|^min|^ampl|^var|^avg|^stdd|^ske|^kurt", colnames(pmltest))]
+
+set.seed(2015) # for reproducibilty
+library(caret)
+dim(pmltrainclean)
+str(pmltrainclean)
+table(pmltrainclean$classe)
+
+qplot(pmltrainclean$classe) #plot of classe
+
+library(AppliedPredictiveModeling) # snapshot of some of the data in training set
+transparentTheme(trans = .4)
+featurePlot(x = pmltrainclean[, 8:13],
+            y = pmltrainclean$classe,
+            plot = "pairs")
+
+summary(pmltrainclean)
+
+# create training, testing and validation set from clean data
+intrain <- createDataPartition(pmltrainclean$classe,p=0.6,list=FALSE)
+train <- pmltrainclean[intrain,]
+valid <- pmltrainclean[-intrain,]
+test <- pmltestclean
+dim(train); dim(valid); dim(test)
+
+
+#find and remove near zero values if need to
+nzv <- nearZeroVar(train)
+nzv # no values to remove
+
+#correlation
+cortrain <- cor(train[,-53])
+summary(cortrain[upper.tri(cortrain)])
+highcor <- findCorrelation(cortrain, cutoff= .75) #remove high correlation vaules
+filteredcor <- cortrain[, -highcor]
+cortrain2 <- cor(filteredcor)
+summary(cortrain2[upper.tri(cortrain2)])
+
+library(corrplot)
+corrplot(cortrain, method = "color")
+```
+###Preprocess data with caret
+
+```{r}
+#use caret to process data
+preproc <- preProcess(train[,-53],
+                      method = c('pca','center','scale'),
+                      thresh = 0.95)
+predtrain <- predict(preproc, train[, -53])
+predvalid <- predict(preproc, valid[, -53])
+predtest <- predict(preproc, test[, -53])
+
+dim(predtrain);dim(predvalid); dim(predtest)
+```
+###Modeling
+
+```{r}
+train$classe <- as.factor(train$classe)
+modelfit <- train(train$classe~.,
+                  method = "rf",
+                  ntree = 250,
+                  data = predtrain,
+                  trControl = trainControl(method = "cv", 10))
+modelfit
+
+#the importance of the predictor variables in the final model are plotted. The Mean decrease Gini index is used to determine the most important variables.
+varImpPlot(modelfit$finalModel, sort = TRUE, main = "Relative importance of PCs")
+plot(modelfit, log = "y", lwd=2,
+     main = "Random Forest Accuracy",
+     xlab = "Predictors",
+     ylab = "Accuracy")
+
+#the error rates of the final model are plotted over the final 250 trees. The Error rates converge as the number of tree approach 250. For all 5 classe the error rates are less than 0.05.
+plot(modelfit$finalModel, main = "Random Forest error rate")
+
+pmlvalid <- predict(modelfit, predvalid)
+confusionMatrix(valid$classe, pmlvalid)
+
+sampleerror <- as.numeric(confusionMatrix(valid$classe, pmlvalid)$overall[1])
+sampleerror
+
+testanswer <- predict(modelfit, predtest)
+testanswer
+```
+#Results
+```{r}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(as.character(testanswer))
+```
+
+#Conclusion
+I have built a model to predict the exercise form based on the movement data, the estimated out of sample error is (1- testing accuracy){```r 1-sampleerror}.  
+nocite:
+@Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz3jdlmeAu0
+
